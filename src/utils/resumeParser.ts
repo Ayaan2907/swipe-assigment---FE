@@ -1,5 +1,3 @@
-import mammoth from "mammoth";
-
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const PHONE_REGEX = /\+?\d[\d()\-\s]{8,}\d/;
 
@@ -53,7 +51,9 @@ async function extractTextFromPdf(file: File) {
 
 async function extractTextFromDocx(file: File) {
   const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.extractRawText({ arrayBuffer });
+  const mammoth = await import("mammoth/mammoth.browser.js");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (mammoth as any).extractRawText({ arrayBuffer });
   return result.value ?? "";
 }
 

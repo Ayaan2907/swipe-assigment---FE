@@ -96,14 +96,15 @@ const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 async function getModel(prompt: string, intent: "question" | "evaluation" | "summary") {
   try {
-    const selection = await selectModel(prompt, {
-      accuracy: intent === "question" ? 0.75 : 0.9,
-      cost: intent === "summary" ? 0.4 : 0.6,
-      speed: intent === "evaluation" ? 0.5 : 0.6,
-      tokenLimit: 4000,
-      reasoning: intent !== "summary",
-    });
-    return selection.model ?? DEFAULT_MODEL;
+    // const selection = await selectModel(prompt, {
+    //   accuracy: intent === "question" ? 0.75 : 0.9,
+    //   cost: intent === "summary" ? 0.4 : 0.6,
+    //   speed: intent === "evaluation" ? 0.5 : 0.6,
+    //   tokenLimit: 4000,
+    //   reasoning: intent !== "summary",
+    // });
+    // return selection.model ?? DEFAULT_MODEL;
+    return DEFAULT_MODEL;
   } catch (error) {
     logger.warn("Model selection failed, falling back to default", error);
     return DEFAULT_MODEL;

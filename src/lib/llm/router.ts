@@ -12,7 +12,7 @@ if (!apiKey) {
 
 const routerConfig: RouterConfig = {
   OPEN_ROUTER_API_KEY: apiKey ?? "",
-  selectorModel: "anthropic/claude-3.5-sonnet",
+  selectorModel: "google/gemini-2.0-flash-exp:free",
   enableLogging: false,
 };
 

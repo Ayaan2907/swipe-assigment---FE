@@ -74,6 +74,7 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const draftRef = useRef("");
   const autoSubmittedRef = useRef<string | null>(null);
+  const autoStartedRef = useRef(false);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -92,6 +93,15 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
     }, 1000);
     return () => clearInterval(interval);
   }, [dispatch, session?.currentQuestionId, session?.status, sessionId]);
+
+  useEffect(() => {
+    if (!session) return;
+    if (autoStartedRef.current) return;
+    if (session.status === "not_started") {
+      autoStartedRef.current = true;
+      void dispatch(startInterview({ sessionId }));
+    }
+  }, [dispatch, session, sessionId]);
 
   useEffect(() => {
     if (!currentQuestion) return;
@@ -215,12 +225,12 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
             </header>
 
             <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-              {messages.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-slate-400">
-                  <p>The interview hasn&apos;t started yet.</p>
-                  {canStartInterview ? (
-                    <button
-                      type="button"
+                  {messages.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-slate-400">
+                      <p>The interview hasn&apos;t started yet.</p>
+                      {canStartInterview ? (
+                        <button
+                          type="button"
                       onClick={handleStartInterview}
                       className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
                     >
