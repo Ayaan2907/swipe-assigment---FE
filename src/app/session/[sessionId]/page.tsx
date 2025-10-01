@@ -1,12 +1,14 @@
 import { SessionWorkspace } from "@/components/session/SessionWorkspace";
 
-type SessionPageProps = {
-  params: {
-    sessionId: string;
-  };
-};
+type SessionPageParams = Promise<{
+  sessionId: string;
+}>;
 
-export default function SessionPage({ params }: SessionPageProps) {
-  const sessionId = decodeURIComponent(params.sessionId);
-  return <SessionWorkspace sessionId={sessionId} />;
+interface SessionPageProps {
+  params: SessionPageParams;
+}
+
+export default async function SessionPage({ params }: SessionPageProps) {
+  const { sessionId } = await params;
+  return <SessionWorkspace sessionId={decodeURIComponent(sessionId)} />;
 }

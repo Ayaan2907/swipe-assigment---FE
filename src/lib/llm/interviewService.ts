@@ -1,15 +1,16 @@
-import type { CandidateRecord, InterviewQuestion } from "@/types/interview";
-
 import { Logger } from "@/utils/logger";
-
-import { callOpenRouter } from "./openRouterClient";
 import { selectModel } from "./router";
+import { callOpenRouter } from "./openRouterClient";
 import { extractJsonBlock } from "./json";
 
 interface QuestionRequest {
   difficulty: "easy" | "medium" | "hard";
-  candidate: CandidateRecord;
-  previousQuestions: InterviewQuestion[];
+  candidate: {
+    name?: string | null;
+    role?: string | null;
+    resume?: { parsedText?: string } | null;
+  };
+  previousQuestions: Array<{ prompt: string; difficulty: "easy" | "medium" | "hard" }>;
 }
 
 interface QuestionResult {
@@ -18,7 +19,13 @@ interface QuestionResult {
 }
 
 interface EvaluationRequest {
-  question: InterviewQuestion;
+  question: {
+    prompt: string;
+    difficulty: "easy" | "medium" | "hard";
+    evaluation?: {
+      reasoning?: string;
+    };
+  };
   candidateAnswer: string;
 }
 
@@ -28,8 +35,18 @@ interface EvaluationResult {
 }
 
 interface SummaryRequest {
-  candidate: CandidateRecord;
-  questions: InterviewQuestion[];
+  candidate: {
+    name?: string | null;
+  };
+  questions: Array<{
+    prompt: string;
+    difficulty: "easy" | "medium" | "hard";
+    answer?: string | null;
+    evaluation?: {
+      score?: number;
+      reasoning?: string;
+    };
+  }>;
 }
 
 interface SummaryResult {
@@ -96,15 +113,15 @@ const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 async function getModel(prompt: string, intent: "question" | "evaluation" | "summary") {
   try {
-    // const selection = await selectModel(prompt, {
-    //   accuracy: intent === "question" ? 0.75 : 0.9,
-    //   cost: intent === "summary" ? 0.4 : 0.6,
-    //   speed: intent === "evaluation" ? 0.5 : 0.6,
-    //   tokenLimit: 4000,
-    //   reasoning: intent !== "summary",
-    // });
-    // return selection.model ?? DEFAULT_MODEL;
-    return DEFAULT_MODEL;
+    const selection = await selectModel(prompt, {
+      accuracy: intent === "question" ? 0.75 : 0.9,
+      cost: intent === "summary" ? 0.4 : 0.6,
+      speed: intent === "evaluation" ? 0.5 : 0.6,
+      tokenLimit: 4000,
+      reasoning: intent !== "summary",
+    });
+    return selection.model ?? DEFAULT_MODEL;
+    // return DEFAULT_MODEL;
   } catch (error) {
     logger.warn("Model selection failed, falling back to default", error);
     return DEFAULT_MODEL;

@@ -12,14 +12,15 @@ import {
   upsertSession,
 } from "@/features/sessions/sessionsSlice";
 import { appendMessage } from "@/features/chat/chatSlice";
-import { updateCandidateScore, updateCandidateStatus } from "@/features/candidates/candidatesSlice";
-import type { AppDispatch, RootState } from "@/lib/store";
 import {
-  fetchAnswerEvaluation,
-  fetchInterviewQuestion,
-  fetchInterviewSummary,
-} from "@/lib/llm/interviewService";
+  updateCandidateContact,
+  updateCandidateResume,
+  updateCandidateScore,
+  updateCandidateStatus,
+} from "@/features/candidates/candidatesSlice";
+import type { AppDispatch, RootState } from "@/lib/store";
 import type { InterviewDifficulty, InterviewQuestion } from "@/types/interview";
+import { extractContactDetails } from "@/utils/resumeParser";
 
 const DIFFICULTY_SEQUENCE: InterviewDifficulty[] = ["easy", "easy", "medium", "medium", "hard", "hard"];
 const TIMER_BY_DIFFICULTY: Record<InterviewDifficulty, number> = {
@@ -27,6 +28,23 @@ const TIMER_BY_DIFFICULTY: Record<InterviewDifficulty, number> = {
   medium: 60,
   hard: 120,
 };
+
+async function postJson<TResponse>(url: string, body: unknown): Promise<TResponse> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request to ${url} failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as TResponse;
+}
 
 export const startInterview = createAsyncThunk<
   void,
@@ -78,10 +96,20 @@ export const startInterview = createAsyncThunk<
       .map((id) => state.sessions.questions.entities[id])
       .filter(Boolean) as InterviewQuestion[];
 
-    const questionResult = await fetchInterviewQuestion({
+    const questionResult = await postJson<QuestionResult>("/api/interview/question", {
       difficulty,
-      candidate,
-      previousQuestions,
+      candidate: {
+        id: candidate.id,
+        name: candidate.name,
+        email: candidate.email,
+        phone: candidate.phone,
+        role: candidate.role,
+        resume: candidate.resume,
+      },
+      previousQuestions: previousQuestions.map((question) => ({
+        prompt: question.prompt,
+        difficulty: question.difficulty,
+      })),
     });
 
     const questionId = nanoid();
@@ -194,8 +222,12 @@ export const submitAnswer = createAsyncThunk<
   );
 
   try {
-    const evaluation = await fetchAnswerEvaluation({
-      question,
+    const evaluation = await postJson<EvaluationResult>("/api/interview/evaluate", {
+      question: {
+        prompt: question.prompt,
+        difficulty: question.difficulty,
+        evaluation: question.evaluation,
+      },
       candidateAnswer: answer,
     });
 
@@ -242,9 +274,20 @@ export const submitAnswer = createAsyncThunk<
       .map((id) => state.sessions.questions.entities[id])
       .filter(Boolean) as InterviewQuestion[];
 
-    const summary = await fetchInterviewSummary({
-      candidate: state.candidates.entities[session.candidateId]!,
-      questions,
+    const summary = await postJson<SummaryResult>("/api/interview/summary", {
+      candidate: {
+        id: state.candidates.entities[session.candidateId]!.id,
+        name: state.candidates.entities[session.candidateId]!.name,
+        email: state.candidates.entities[session.candidateId]!.email,
+        phone: state.candidates.entities[session.candidateId]!.phone,
+        role: state.candidates.entities[session.candidateId]!.role,
+      },
+      questions: questions.map((question) => ({
+        prompt: question?.prompt ?? "",
+        difficulty: question?.difficulty ?? "easy",
+        answer: question?.answer,
+        evaluation: question?.evaluation,
+      })),
     });
 
     const averageScore =
@@ -304,12 +347,23 @@ export const submitAnswer = createAsyncThunk<
   const nextDifficulty = DIFFICULTY_SEQUENCE[currentIndex + 1];
 
   try {
-    const questionResult = await fetchInterviewQuestion({
+    const questionResult = await postJson<QuestionResult>("/api/interview/question", {
       difficulty: nextDifficulty,
-      candidate: state.candidates.entities[session.candidateId]!,
+      candidate: {
+        id: state.candidates.entities[session.candidateId]!.id,
+        name: state.candidates.entities[session.candidateId]!.name,
+        email: state.candidates.entities[session.candidateId]!.email,
+        phone: state.candidates.entities[session.candidateId]!.phone,
+        role: state.candidates.entities[session.candidateId]!.role,
+        resume: state.candidates.entities[session.candidateId]!.resume,
+      },
       previousQuestions: session.questionIds
         .map((id) => state.sessions.questions.entities[id])
-        .filter(Boolean) as InterviewQuestion[],
+        .filter(Boolean)
+        .map((question) => ({
+          prompt: question!.prompt,
+          difficulty: question!.difficulty,
+        })),
     });
 
     const nextQuestionId = nanoid();
@@ -392,3 +446,158 @@ export const tickActiveQuestion = createAsyncThunk<
 
   dispatch(decrementQuestionTimer({ questionId: question.id }));
 });
+
+interface ChatTurnPayload {
+  sessionId: string;
+  message: string;
+  resume?: {
+    fileName: string;
+    fileType: string;
+    size: number;
+    uploadedAt: string;
+    parsedText?: string;
+  };
+}
+
+function getMissingFields(candidate: ReturnType<typeof selectCandidate>) {
+  const missing: Array<"name" | "email" | "phone" | "resume"> = [];
+  if (!candidate?.name) missing.push("name");
+  if (!candidate?.email) missing.push("email");
+  if (!candidate?.phone) missing.push("phone");
+  if (!candidate?.resume?.parsedText) missing.push("resume");
+  return missing;
+}
+
+function selectCandidate(state: RootState, id: string) {
+  return state.candidates.entities[id] ?? null;
+}
+
+export const handleChatTurn = createAsyncThunk<
+  void,
+  ChatTurnPayload,
+  { dispatch: AppDispatch; state: RootState }
+>("interview/chatTurn", async ({ sessionId, message, resume }, { dispatch, getState }) => {
+  const state = getState();
+  const session = state.sessions.sessions.entities[sessionId];
+  if (!session) throw new Error("Session not found");
+
+  const candidate = selectCandidate(state, session.candidateId);
+  if (!candidate) throw new Error("Candidate not found");
+
+  const trimmedMessage = message.trim();
+
+  const activeQuestionId = session.currentQuestionId;
+  const activeQuestion = activeQuestionId ? state.sessions.questions.entities[activeQuestionId] : undefined;
+
+  if (activeQuestion && session.status === "in_progress") {
+    await dispatch(
+      submitAnswer({
+        sessionId,
+        answer: trimmedMessage,
+      }),
+    );
+    return;
+  }
+
+  if (trimmedMessage.length > 0) {
+    dispatch(
+      appendMessage({
+        sessionId,
+        message: {
+          role: "user",
+          content: trimmedMessage,
+        },
+      }),
+    );
+
+    const extracted = extractContactDetails(trimmedMessage);
+    if (extracted) {
+      const updates: { name?: string | null; email?: string | null; phone?: string | null } = {};
+      if (!candidate.name && extracted.name) updates.name = extracted.name;
+      if (!candidate.email && extracted.email) updates.email = extracted.email;
+      if (!candidate.phone && extracted.phone) updates.phone = extracted.phone;
+      if (Object.keys(updates).length > 0) {
+        dispatch(
+          updateCandidateContact({
+            id: candidate.id,
+            ...updates,
+            updatedAt: new Date().toISOString(),
+          }),
+        );
+      }
+    }
+  }
+
+  if (resume && !candidate.resume?.parsedText) {
+    dispatch(
+      updateCandidateResume({
+        id: candidate.id,
+        resume,
+        updatedAt: resume.uploadedAt,
+      }),
+    );
+  }
+
+  const updatedCandidate = selectCandidate(getState(), candidate.id);
+  const missing = getMissingFields(updatedCandidate);
+
+  if (missing.length > 0) {
+    dispatch(
+      appendMessage({
+        sessionId,
+        message: {
+          role: "assistant",
+          content: `Thanks! I still need your ${missing.join(", ")} before we start. Please provide them here.`,
+        },
+      }),
+    );
+    return;
+  }
+
+  const now = new Date().toISOString();
+
+  const upcomingStatus = session.status === "completed"
+    ? "completed"
+    : session.questionIds.length > 0
+      ? "interviewing"
+      : "collecting_info";
+
+  dispatch(
+    updateCandidateStatus({
+      id: candidate.id,
+      status: upcomingStatus,
+      updatedAt: now,
+    }),
+  );
+
+  if (session.status !== "completed" && (session.questionIds.length === 0 || session.status !== "in_progress")) {
+    await dispatch(startInterview({ sessionId }));
+    return;
+  }
+
+  if (session.status === "completed") {
+    dispatch(
+      appendMessage({
+        sessionId,
+        message: {
+          role: "assistant",
+          content: "This interview is already complete. Feel free to review the summary above.",
+        },
+      }),
+    );
+  }
+});
+interface QuestionResult {
+  question: string;
+  answerGuidance: string;
+}
+
+interface EvaluationResult {
+  score: number;
+  feedback: string;
+}
+
+interface SummaryResult {
+  summary: string;
+  generatedAt: string;
+}

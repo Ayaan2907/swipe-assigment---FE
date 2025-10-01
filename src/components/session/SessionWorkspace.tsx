@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Clock, Loader2, MessageSquare, PauseCircle, PlayCircle, User } from "lucide-react";
+import { Clock, Loader2, MessageSquare, PauseCircle, Paperclip, PlayCircle, User } from "lucide-react";
 
-import { startInterview, submitAnswer, tickActiveQuestion } from "@/features/sessions/interviewThunks";
+import { handleChatTurn, startInterview, submitAnswer, tickActiveQuestion } from "@/features/sessions/interviewThunks";
+import { appendMessage } from "@/features/chat/chatSlice";
 import { useAppDispatch, useAppSelector } from "@/hooks/useRedux";
 import type { RootState } from "@/lib/store";
 import type { InterviewQuestion, InterviewQuestionStatus } from "@/types/interview";
+import { parseResumeFile } from "@/utils/resumeParser";
 
 interface SessionWorkspaceProps {
   sessionId: string;
@@ -72,10 +74,11 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
 
   const [draft, setDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+
   const draftRef = useRef("");
   const autoSubmittedRef = useRef<string | null>(null);
-  const autoStartedRef = useRef(false);
-
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
@@ -94,14 +97,6 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
     return () => clearInterval(interval);
   }, [dispatch, session?.currentQuestionId, session?.status, sessionId]);
 
-  useEffect(() => {
-    if (!session) return;
-    if (autoStartedRef.current) return;
-    if (session.status === "not_started") {
-      autoStartedRef.current = true;
-      void dispatch(startInterview({ sessionId }));
-    }
-  }, [dispatch, session, sessionId]);
 
   useEffect(() => {
     if (!currentQuestion) return;
@@ -143,20 +138,65 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
   }
 
   const canStartInterview = ["not_started", "collecting_info", "paused"].includes(session.status);
-  const canCompose = session.status === "in_progress" && currentQuestion && currentQuestion.status === "active";
-
   const handleStartInterview = () => {
     void dispatch(startInterview({ sessionId }));
   };
 
-  const handleSubmitAnswer = async () => {
-    if (!currentQuestion || !canCompose) return;
+  const handleFormSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!session) return;
+
+    const text = draftRef.current;
+
+    if (!text.trim() && !resumeFile) {
+      return;
+    }
+
     setIsSubmitting(true);
+
+    type ResumePayload = {
+      fileName: string;
+      fileType: string;
+      size: number;
+      uploadedAt: string;
+      parsedText?: string;
+    };
+
+    let resumePayload: ResumePayload | undefined;
+
+    if (resumeFile) {
+      setUploading(true);
+      try {
+        const parsedText = await parseResumeFile(resumeFile);
+        resumePayload = {
+          fileName: resumeFile.name,
+          fileType: resumeFile.type || resumeFile.name.split(".").pop() || "unknown",
+          size: resumeFile.size,
+          uploadedAt: new Date().toISOString(),
+          parsedText,
+        };
+      } catch {
+        dispatch(
+          appendMessage({
+            sessionId,
+            message: {
+              role: "system",
+              content: "I couldn't read that resume. Please upload a PDF or DOCX.",
+            },
+          }),
+        );
+      } finally {
+        setUploading(false);
+        setResumeFile(null);
+      }
+    }
+
     try {
       await dispatch(
-        submitAnswer({
+        handleChatTurn({
           sessionId,
-          answer: draftRef.current,
+          message: text,
+          resume: resumePayload,
         }),
       );
       setDraft("");
@@ -164,11 +204,6 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    void handleSubmitAnswer();
   };
 
   return (
@@ -274,51 +309,71 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
             </div>
 
             <footer className="border-t border-slate-800 px-6 py-4">
-              {canCompose ? (
-                <form onSubmit={handleFormSubmit} className="flex flex-col gap-3">
+              <form onSubmit={handleFormSubmit} className="flex flex-col gap-3">
+                {currentQuestion ? (
                   <div className="flex items-center justify-between text-xs text-slate-400">
                     <span>
-                      Time remaining: {currentQuestion?.remainingSeconds ?? 0}s • Difficulty: {currentQuestion?.difficulty}
+                      Time remaining: {currentQuestion.remainingSeconds}s • Difficulty: {currentQuestion.difficulty}
                     </span>
-                    <span>Question #{(currentQuestion?.order ?? 0) + 1} of 6</span>
+                    <span>Question #{currentQuestion.order + 1} of 6</span>
                   </div>
-                  <textarea
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    placeholder="Type your answer..."
-                    className="h-32 w-full resize-none rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-                  />
-                  <div className="flex items-center justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraft("");
-                        draftRef.current = "";
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    Share updates here. Upload your resume or provide missing details to begin. Once the interview starts,
+                    responses here will be timed.
+                  </p>
+                )}
+
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={currentQuestion ? "Type your answer..." : "Type your message..."}
+                  className="h-32 w-full resize-none rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                />
+
+                {!candidate?.resume?.parsedText && (
+                  <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                    <span className="flex items-center gap-2">
+                      <Paperclip className="h-4 w-4" />
+                      {resumeFile ? resumeFile.name : "Attach resume (PDF/DOCX)"}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) {
+                          setResumeFile(file);
+                        }
                       }}
-                      className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
-                    >
-                      <PauseCircle className="h-4 w-4" />
-                      Clear
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-indigo-500/50"
-                    >
-                      {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-                      Submit answer
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className="text-center text-xs text-slate-500">
-                  {session.status === "completed"
-                    ? "Interview completed. Review the transcript on the left."
-                    : canStartInterview
-                    ? "Start the interview to unlock chatting."
-                    : "Waiting for the AI to deliver the next question."}
+                    />
+                  </label>
+                )}
+
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft("");
+                      draftRef.current = "";
+                      setResumeFile(null);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+                  >
+                    <PauseCircle className="h-4 w-4" />
+                    Clear
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || uploading}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-indigo-500/50"
+                  >
+                    {isSubmitting || uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+                    Send
+                  </button>
                 </div>
-              )}
+              </form>
             </footer>
           </section>
 
