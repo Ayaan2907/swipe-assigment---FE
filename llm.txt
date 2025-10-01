@@ -1,0 +1,49 @@
+Project: Swipe Internship Assignment — AI-Powered Interview Assistant
+Repo: Next.js 15 / React 19 / Redux Toolkit
+
+Current State
+-------------
+1. Dashboard
+   - Lists candidates with search/sort, displays stats.
+   - "Start new interview" instantly creates candidate + session, seeds system welcome message, routes to chat.
+2. Session Workspace
+   - Single screen chat-first experience.
+   - Composer accepts text and resume attachments; resume parsing stores parsed text + metadata.
+   - `handleChatTurn` orchestrates early-stage flow: saves user message, updates contact info from free text, parses resume, checks missing fields, and auto-starts interview once ready.
+   - Once interview active, legacy question/evaluation/summary thunks still drive the timed Q&A.
+   - Timer auto-submits answers on zero, preserving previous behavior.
+3. API Routes
+   - `/api/interview/question`, `/evaluate`, `/summary` proxy to OpenRouter helpers (currently forced to `openai/gpt-4o-mini`; auto-llm-selector commented out).
+4. Resume Intake
+   - No separate route; happens inline with chat.
+5. Persistence
+   - redux-persist continues to hydrate candidates, sessions, chat.
+
+What’s Missing / Known Issues
+-----------------------------
+- Single chat completion loop not implemented yet; we still rely on discrete question/evaluation calls.
+- Need `/api/interview/chat` (or server action) that consumes transcript + metadata and returns next assistant turn.
+- Auto model selection disabled; default model may not be optimal.
+- After resume/intake, assistant does not proactively confirm readiness before `startInterview` kicks off; UX polish needed.
+- Timers only meaningful during legacy question flow; once unified chat is live, need to pass timer events to the LLM.
+- Minimal error messaging for resume parse failures or API errors.
+
+Outstanding Errors
+------------------
+- None blocking builds/tests after refactor, but chat orchestration incomplete; assistant still relies on old API chain.
+
+Next Steps for Successor
+------------------------
+1. Implement `/api/interview/chat` (or server action) that:
+   - Receives session transcript, candidate metadata, timer events, and optional resume text.
+   - Calls OpenRouter chat completions with a structured system prompt guiding Crisp through resume intake, six timed questions (2 easy/2 medium/2 hard), scoring, and final summary in one conversation.
+   - Returns assistant reply plus any structured directives (start timer, interview complete, etc.).
+2. Modify `handleChatTurn` to call the new endpoint. Retire `startInterview`, `submitAnswer`, and related question/evaluation thunks once the new flow is stable.
+3. Re-enable auto-llm-selector for model choices (questioning vs scoring vs summary hints) and ensure bundler issues are solved.
+4. Revisit timer logic so countdown events trigger chat turns (e.g., send "time expired" message to API) rather than auto-submitting via legacy thunk.
+5. Add better UX feedback: loader/toasts on resume parse, disable send while upload in progress, assistant acknowledgement when requirements satisfied.
+6. Run end-to-end tests: start new session, upload resume, finish interview, refresh mid-flow to confirm persistence.
+
+Quick Prompt for New LLM / Dev
+------------------------------
+"You’re continuing a Next.js 15 + Redux interview assistant. Dashboard already spawns a candidate/session and opens `/session/:id` where the chat composer parses resumes and collects missing details via `handleChatTurn`. Legacy question/evaluation APIs still power the Q&A; replace them with a single `/api/interview/chat` endpoint that uses OpenRouter chat completions to run the entire interview (intake → six timed questions → scoring → summary). Re-enable auto-llm-selector, wire the chat loop, and adapt timers so the LLM gets notified on timeouts."
