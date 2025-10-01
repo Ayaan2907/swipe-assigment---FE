@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
-import { useSelector } from "react-redux";
-import { Clock, MessageSquare, User } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Clock, Loader2, MessageSquare, PauseCircle, PlayCircle, User } from "lucide-react";
 
+import { startInterview, submitAnswer, tickActiveQuestion } from "@/features/sessions/interviewThunks";
+import { useAppDispatch, useAppSelector } from "@/hooks/useRedux";
 import type { RootState } from "@/lib/store";
 import type { InterviewQuestion, InterviewQuestionStatus } from "@/types/interview";
 
@@ -54,17 +55,58 @@ function groupQuestions(questions: InterviewQuestion[]) {
 }
 
 export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
-  const session = useSelector((state: RootState) => state.sessions.sessions.entities[sessionId]);
-  const candidate = useSelector((state: RootState) =>
+  const dispatch = useAppDispatch();
+  const session = useAppSelector((state: RootState) => state.sessions.sessions.entities[sessionId]);
+  const candidate = useAppSelector((state: RootState) =>
     session ? state.candidates.entities[session.candidateId] ?? null : null,
   );
-  const messages = useSelector((state: RootState) => state.chat.threads[sessionId] ?? []);
-  const questions = useSelector((state: RootState) => {
+  const messages = useAppSelector((state: RootState) => state.chat.threads[sessionId] ?? []);
+  const questions = useAppSelector((state: RootState) => {
     const all = Object.values(state.sessions.questions.entities ?? {}).filter(Boolean) as InterviewQuestion[];
     return all.filter((question) => question.sessionId === sessionId);
   });
 
   const questionMeta = useMemo(() => groupQuestions(questions), [questions]);
+  const currentQuestion = questionMeta.current;
+  const questionCounts = questionMeta.counts;
+
+  const [draft, setDraft] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const draftRef = useRef("");
+  const autoSubmittedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    setDraft("");
+    draftRef.current = "";
+    autoSubmittedRef.current = null;
+  }, [currentQuestion?.id]);
+
+  useEffect(() => {
+    if (!session?.currentQuestionId || session.status !== "in_progress") return;
+    const interval = setInterval(() => {
+      void dispatch(tickActiveQuestion({ sessionId }));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [dispatch, session?.currentQuestionId, session?.status, sessionId]);
+
+  useEffect(() => {
+    if (!currentQuestion) return;
+    if (currentQuestion.status !== "active") return;
+    if (currentQuestion.remainingSeconds > 0) return;
+    if (autoSubmittedRef.current === currentQuestion.id) return;
+
+    autoSubmittedRef.current = currentQuestion.id;
+    void dispatch(
+      submitAnswer({
+        sessionId,
+        answer: draftRef.current,
+      }),
+    );
+  }, [currentQuestion, dispatch, sessionId]);
 
   if (!session) {
     return (
@@ -90,8 +132,34 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
     );
   }
 
-  const currentQuestion = questionMeta.current;
-  const questionCounts = questionMeta.counts;
+  const canStartInterview = ["not_started", "collecting_info", "paused"].includes(session.status);
+  const canCompose = session.status === "in_progress" && currentQuestion && currentQuestion.status === "active";
+
+  const handleStartInterview = () => {
+    void dispatch(startInterview({ sessionId }));
+  };
+
+  const handleSubmitAnswer = async () => {
+    if (!currentQuestion || !canCompose) return;
+    setIsSubmitting(true);
+    try {
+      await dispatch(
+        submitAnswer({
+          sessionId,
+          answer: draftRef.current,
+        }),
+      );
+      setDraft("");
+      draftRef.current = "";
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void handleSubmitAnswer();
+  };
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
@@ -127,7 +195,7 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
         </header>
 
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-          <section className="flex min-h-[500px] flex-col rounded-2xl border border-slate-800 bg-slate-900">
+          <section className="flex min-h-[520px] flex-col rounded-2xl border border-slate-800 bg-slate-900">
             <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-200">
@@ -136,7 +204,7 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
                 <div>
                   <p className="text-sm font-medium text-white">Interview chat</p>
                   <p className="text-xs text-slate-400">
-                    All system prompts, candidate answers, and AI evaluations
+                    Questions, answers, timers, and AI evaluations
                   </p>
                 </div>
               </div>
@@ -148,11 +216,22 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
 
             <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
               {messages.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-slate-400">
-                  <p>No chat activity yet.</p>
-                  <p className="text-xs text-slate-500">
-                    Once the interview begins, questions, answers, and AI feedback will show up here.
-                  </p>
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-slate-400">
+                  <p>The interview hasn&apos;t started yet.</p>
+                  {canStartInterview ? (
+                    <button
+                      type="button"
+                      onClick={handleStartInterview}
+                      className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+                    >
+                      <PlayCircle className="h-4 w-4" />
+                      Start interview
+                    </button>
+                  ) : (
+                    <p className="text-xs text-slate-500">
+                      Waiting for the first AI-generated question.
+                    </p>
+                  )}
                 </div>
               ) : (
                 messages.map((message) => (
@@ -184,8 +263,52 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
               )}
             </div>
 
-            <footer className="border-t border-slate-800 px-6 py-4 text-right text-xs text-slate-400">
-              Live chat controls and timer will appear here when the interview engine is connected.
+            <footer className="border-t border-slate-800 px-6 py-4">
+              {canCompose ? (
+                <form onSubmit={handleFormSubmit} className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span>
+                      Time remaining: {currentQuestion?.remainingSeconds ?? 0}s • Difficulty: {currentQuestion?.difficulty}
+                    </span>
+                    <span>Question #{(currentQuestion?.order ?? 0) + 1} of 6</span>
+                  </div>
+                  <textarea
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder="Type your answer..."
+                    className="h-32 w-full resize-none rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                  />
+                  <div className="flex items-center justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft("");
+                        draftRef.current = "";
+                      }}
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+                    >
+                      <PauseCircle className="h-4 w-4" />
+                      Clear
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-indigo-500/50"
+                    >
+                      {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+                      Submit answer
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="text-center text-xs text-slate-500">
+                  {session.status === "completed"
+                    ? "Interview completed. Review the transcript on the left."
+                    : canStartInterview
+                    ? "Start the interview to unlock chatting."
+                    : "Waiting for the AI to deliver the next question."}
+                </div>
+              )}
             </footer>
           </section>
 
@@ -197,7 +320,7 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-white">Candidate profile</p>
-                  <p className="text-xs text-slate-400">Personal details from resume intake</p>
+                  <p className="text-xs text-slate-400">Contact details and AI summary</p>
                 </div>
               </header>
               <dl className="space-y-3 text-sm text-slate-300">
@@ -273,14 +396,6 @@ export function SessionWorkspace({ sessionId }: SessionWorkspaceProps) {
                   )}
                 </ul>
               )}
-            </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-300">
-              <p className="font-medium text-white">Next steps</p>
-              <p className="mt-2 text-slate-400">
-                Resume upload, AI-driven question generation, timers, and scoring will plug into this workspace. As you add
-                interview data, this panel will surface live results and final summaries for the interviewer view.
-              </p>
             </div>
           </aside>
         </div>

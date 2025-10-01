@@ -5,12 +5,12 @@ import type {
   InterviewSessionStatus,
 } from "@/types/interview";
 
-const sessionsAdapter = createEntityAdapter<InterviewSession>({
+export const sessionsAdapter = createEntityAdapter<InterviewSession>({
   selectId: (session) => session.id,
   sortComparer: (a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""),
 });
 
-const questionsAdapter = createEntityAdapter<InterviewQuestion>({
+export const questionsAdapter = createEntityAdapter<InterviewQuestion>({
   selectId: (question) => question.id,
   sortComparer: (a, b) => a.order - b.order,
 });
@@ -34,7 +34,10 @@ const sessionsSlice = createSlice({
       action: PayloadAction<{ session: InterviewSession; questions?: Omit<InterviewQuestion, "id" | "sessionId">[] }>,
     ) {
       const { session, questions = [] } = action.payload;
-      sessionsAdapter.addOne(state.sessions, session);
+      sessionsAdapter.addOne(state.sessions, {
+        ...session,
+        questionIds: session.questionIds ?? [],
+      });
       questions.forEach((questionConfig, index) => {
         const id = nanoid();
         questionsAdapter.addOne(state.questions, {
@@ -43,6 +46,10 @@ const sessionsSlice = createSlice({
           sessionId: session.id,
           order: index,
         });
+        const sessionRecord = state.sessions.entities[session.id];
+        if (sessionRecord) {
+          sessionRecord.questionIds = [...(sessionRecord.questionIds ?? []), id];
+        }
       });
     },
     upsertSession(state, action: PayloadAction<InterviewSession>) {
@@ -85,6 +92,12 @@ const sessionsSlice = createSlice({
         question.remainingSeconds = action.payload.remainingSeconds;
       }
     },
+    decrementQuestionTimer(state, action: PayloadAction<{ questionId: string }>) {
+      const question = state.questions.entities[action.payload.questionId];
+      if (question && question.status === "active" && question.remainingSeconds > 0) {
+        question.remainingSeconds -= 1;
+      }
+    },
     updateQuestionAnswer(
       state,
       action: PayloadAction<{ questionId: string; answer: string; answeredAt: string }>,
@@ -94,6 +107,36 @@ const sessionsSlice = createSlice({
         question.answer = action.payload.answer;
         question.answeredAt = action.payload.answeredAt;
       }
+    },
+    setQuestionStatus(
+      state,
+      action: PayloadAction<{ questionId: string; status: InterviewQuestion["status"]; askedAt?: string }>,
+    ) {
+      const question = state.questions.entities[action.payload.questionId];
+      if (question) {
+        question.status = action.payload.status;
+        if (action.payload.askedAt) {
+          question.askedAt = action.payload.askedAt;
+        }
+      }
+    },
+    addQuestionToSession(
+      state,
+      action: PayloadAction<{ sessionId: string; question: InterviewQuestion; order?: number }>,
+    ) {
+      const { sessionId, question, order } = action.payload;
+      const session = state.sessions.entities[sessionId];
+      if (!session) return;
+
+      const finalOrder = typeof order === "number" ? order : session.questionIds.length;
+      const record: InterviewQuestion = {
+        ...question,
+        order: finalOrder,
+      };
+
+      questionsAdapter.addOne(state.questions, record);
+      session.questionIds = [...(session.questionIds ?? []), record.id];
+      session.updatedAt = new Date().toISOString();
     },
     updateQuestionEvaluation(
       state,
@@ -124,8 +167,11 @@ export const {
   upsertQuestion,
   upsertQuestions,
   updateQuestionRemainingTime,
+  decrementQuestionTimer,
   updateQuestionAnswer,
   updateQuestionEvaluation,
+  setQuestionStatus,
+  addQuestionToSession,
   clearSessions,
 } = sessionsSlice.actions;
 
